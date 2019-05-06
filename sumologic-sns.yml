@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "A template to create a topic and a subscription with the endpoint of the Sumo Logic source"
+
+Parameters:
+
+  SumologicSNSEndpoint:
+    Type: String
+    Description: SNS Endpoint URL for Sumologic, see collectors settings
+
+Resources:
+
+  CloudTrailBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Status: Enabled
+            ExpirationInDays: 3
+
+  CloudTrailBucketPolicy: 
+    Type: AWS::S3::BucketPolicy
+    Properties: 
+      Bucket: !Ref CloudTrailBucket
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+              - Sid: "AWSCloudTrailAclCheck"
+                Effect: "Allow"
+                Principal: 
+                  Service: "cloudtrail.amazonaws.com"
+                Action: "s3:GetBucketAcl"
+                Resource: !Sub arn:aws:s3:::${CloudTrailBucket}
+
+              - Sid: "AWSCloudTrailWrite"
+                Effect: "Allow"
+                Principal: 
+                  Service: "cloudtrail.amazonaws.com"
+                Action: "s3:PutObject"
+                Resource: !Sub arn:aws:s3:::${CloudTrailBucket}/AWSLogs/${AWS::AccountId}/*
+                Condition: 
+                  StringEquals:
+                    s3:x-amz-acl: "bucket-owner-full-control"
+
+  CloudTrailConfig:
+    DependsOn:
+      - CloudTrailBucketPolicy
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      IsMultiRegionTrail: true
+      IsLogging: true
+      IncludeGlobalServiceEvents: true
+      S3BucketName: !Ref CloudTrailBucket
+
+
+ SumoSNSTopic:
+   Type: AWS::SNS::Topic
+   Properties:
+     TopicName: !Sub SumoSNSTopic-${AWS::StackName}
+
+ SumoSNSSubscription:
+   Type: AWS::SNS::Subscription
+   Properties:
+     TopicArn: !Ref: SumoSNSTopic
+     Endpoint: !Ref SumologicSNSEndpoint
+     Protocol: https
+     DeliveryPolicy:
+       healthyRetryPolicy:
+         numRetries: 40
+         minDelayTarget: 10
+         maxDelayTarget: 300
+         numMinDelayRetries: 3
+         numMaxDelayRetries: 5
+         numNoDelayRetries: 0
+         backoffFunction: exponential
+
+ sumoSNSpolicy:
+   Type: AWS::SNS::TopicPolicy
+   Properties:
+     Topics:
+       - Ref: sumoSNSTopic
+     PolicyDocument:
+       Id: SumoTopicPolicy
+       Statement:
+         - Action: sns:Publish
+           Condition:
+             StringEquals:
+               aws:SourceAccount: !Ref AWS::AccountId
+             ArnLike:
+               aws:SourceArn: !Sub arn:aws:s3:*:*:${CloudtrailBucket}
+           Effect: Allow
+           Principal:
+             AWS: "*"
+           Resource: !Ref SumoSNSTopic
